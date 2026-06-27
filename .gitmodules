@@ -1,0 +1,3 @@
+[submodule "external/deepvoice-detection"]
+	path = external/deepvoice-detection
+	url = https://github.com/t-tanghuru/deepvoice-detection.git

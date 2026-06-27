@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Node / frontend
+node_modules/
+frontend/dist/
+
+# Runtime files
+storage/deepvoice.db
+storage/uploads/*
+!storage/uploads/.gitkeep
+storage/heatmaps/*
+!storage/heatmaps/.gitkeep
+
+# Experiment outputs
+wandb/
+results/
+*.log
+*.npy
+
+# Legacy local model copies. The canonical model source is the submodule at
+# external/deepvoice-detection.
+model/
+scripts/
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

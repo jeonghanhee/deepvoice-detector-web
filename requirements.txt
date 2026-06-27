@@ -1,0 +1,8 @@
+-r external/deepvoice-detection/requirements.txt
+
+fastapi
+uvicorn[standard]
+sqlalchemy
+python-multipart
+aiofiles
+matplotlib
