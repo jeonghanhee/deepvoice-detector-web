@@ -9,6 +9,7 @@ from .api.routes.audio import router as audio_router
 from .api.routes.history import router as history_router
 from .config import HEATMAP_DIR, UPLOAD_DIR
 from .database import init_db
+from .services.detector import warm_up_models
 
 
 app = FastAPI(
@@ -59,3 +60,11 @@ def on_startup():
     init_db()
     os.makedirs(UPLOAD_DIR, exist_ok=True)
     os.makedirs(HEATMAP_DIR, exist_ok=True)
+    try:
+        warmup = warm_up_models()
+        print(
+            "DeepVoice models warmed up: "
+            f"{', '.join(warmup['models'])} ({warmup['elapsed']}s)"
+        )
+    except Exception as exc:
+        print(f"DeepVoice model warm-up skipped: {exc}")

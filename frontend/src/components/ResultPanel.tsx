@@ -10,12 +10,20 @@ interface ResultPanelProps {
   analysis: AnalysisResponse | null;
 }
 
+function formatScore(value?: number | null) {
+  return typeof value === "number" ? `${(value * 100).toFixed(2)}%` : "-";
+}
+
 export function ResultPanel({ analysis }: ResultPanelProps) {
   if (!analysis?.result) return null;
 
   const result = analysis.result;
   const isFake = result.is_fake === 1;
   const confidence = Number(result.confidence || 0);
+  const finalLabel = isFake ? "가짜 음성" : "실제 음성";
+  const detailType = analysis.detail_type || (isFake ? "유형 불확실" : "해당 없음");
+  const ttsResult = analysis.model_results?.find((item) => item.model_key === "tts");
+  const rvcResult = analysis.model_results?.find((item) => item.model_key === "rvc");
   const heatmapSrc = analysis.heatmap_url ? `${API_BASE}${analysis.heatmap_url}` : null;
 
   return (
@@ -30,10 +38,10 @@ export function ResultPanel({ analysis }: ResultPanelProps) {
           </div>
           <div>
             <div className={`verdict-label ${isFake ? "fake" : "real"}`}>
-              {isFake ? "AI 합성 음성" : "실제 음성"}
+              {finalLabel}
             </div>
             <div className="verdict-desc">
-              {isFake ? "합성 음성으로 판정되었습니다." : "실제 음성으로 판정되었습니다."}
+              세부 유형: {detailType}
             </div>
           </div>
         </div>
@@ -48,6 +56,31 @@ export function ResultPanel({ analysis }: ResultPanelProps) {
               className={`conf-fill ${isFake ? "fake" : "real"}`}
               style={{ width: `${Math.min(confidence, 100)}%` }}
             />
+          </div>
+        </div>
+
+        <div className="model-score-section">
+          <div className="meta-section-label">세부 모델 탐지 결과</div>
+          <div className="model-score-list">
+            <div className="model-score-row">
+              <div>
+                <div className="model-score-label">TTS 합성음성 탐지 점수</div>
+              </div>
+              <div className={`model-score-value ${ttsResult?.is_fake ? "fake" : "real"}`}>
+                {formatScore(ttsResult?.fake_prob)}
+              </div>
+            </div>
+            <div className="model-score-row">
+              <div>
+                <div className="model-score-label">RVC 변환음성 탐지 점수</div>
+              </div>
+              <div className={`model-score-value ${rvcResult?.is_fake ? "fake" : "real"}`}>
+                {formatScore(rvcResult?.fake_prob)}
+              </div>
+            </div>
+          </div>
+          <div className="model-score-note">
+            ※ 두 점수는 서로 더해서 100%가 되는 확률이 아니라, 각각의 모델이 독립적으로 산출한 의심 점수입니다.
           </div>
         </div>
 

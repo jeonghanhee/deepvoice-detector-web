@@ -27,9 +27,22 @@ external/deepvoice-detection -> https://github.com/t-tanghuru/deepvoice-detectio
 Do not add local copies of model code under `model/` or `scripts/`. Use the
 submodule as the canonical model source.
 
-Analysis results use the final Whisper encoder + LCNN model path. The web UI
-does not show MFCC visualizations. For model evidence, the backend generates
-log-Mel gradient heatmap artifacts under `storage/heatmaps/`:
+Analysis results run two independent binary detectors: the TTS checkpoint and,
+when available, the RVC checkpoint. The service does not treat TTS, RVC, and
+REAL as one multiclass output. Instead, it shows the final integrated verdict
+and both independent suspicion scores. The final decision logic is:
+
+```text
+TTS score < TTS threshold and RVC score < RVC threshold -> likely real voice
+TTS score >= TTS threshold and RVC score < RVC threshold -> suspected TTS synthesis
+TTS score < TTS threshold and RVC score >= RVC threshold -> suspected RVC conversion
+TTS score >= TTS threshold and RVC score >= RVC threshold -> suspected combined/uncertain type
+```
+
+The TTS and RVC scores are independent model outputs and should not be read as
+percentages that sum to 100%. The web UI does not show MFCC visualizations. For
+model evidence, the backend generates log-Mel gradient heatmap artifacts under
+`storage/heatmaps/` using the checkpoint selected for the final decision:
 
 ```text
 *_logmel_heatmap.png
@@ -57,10 +70,11 @@ git submodule update --init --recursive
 
 ## Model Checkpoint
 
-The default checkpoint path is:
+The default checkpoint paths are:
 
 ```text
 checkpoints/best_model_tts_whisper_encoder_lcnn.pt
+checkpoints/best_model_rvc_whisper_encoder_lcnn.pt
 ```
 
 This repository is configured to track `*.pt` files with Git LFS. Before pushing
@@ -71,11 +85,14 @@ git lfs install
 git lfs pull
 ```
 
-To use a checkpoint outside the repository, set:
+To use checkpoints outside the repository, set:
 
 ```powershell
-$env:DEEPVOICE_MODEL_PATH="C:\path\to\best_model_tts_whisper_encoder_lcnn.pt"
+$env:DEEPVOICE_TTS_MODEL_PATH="C:\path\to\best_model_tts_whisper_encoder_lcnn.pt"
+$env:DEEPVOICE_RVC_MODEL_PATH="C:\path\to\best_model_rvc_whisper_encoder_lcnn.pt"
 ```
+
+`DEEPVOICE_MODEL_PATH` is still accepted as a legacy TTS checkpoint override.
 
 The model source path can also be overridden if needed:
 

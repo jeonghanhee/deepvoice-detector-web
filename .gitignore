@@ -19,6 +19,7 @@ storage/heatmaps/*
 # Experiment outputs
 wandb/
 results/
+samples/
 *.log
 *.npy
 

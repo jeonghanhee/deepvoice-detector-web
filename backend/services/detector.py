@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 import time
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Optional, Union
@@ -31,13 +32,45 @@ def _resolve_project_path(path_value: PathLike) -> Path:
 DEEPVOICE_SOURCE_DIR = _resolve_project_path(
     os.getenv("DEEPVOICE_SOURCE_DIR", "external/deepvoice-detection")
 )
-DEFAULT_MODEL_PATH = PROJECT_ROOT / "checkpoints" / "best_model_tts_whisper_encoder_lcnn.pt"
-LEGACY_MODEL_PATH = PROJECT_ROOT / "model" / "checkpoints" / "best_model_tts_whisper_encoder_lcnn.pt"
+DEFAULT_TTS_MODEL_PATH = PROJECT_ROOT / "checkpoints" / "best_model_tts_whisper_encoder_lcnn.pt"
+DEFAULT_RVC_MODEL_PATH = PROJECT_ROOT / "checkpoints" / "best_model_rvc_whisper_encoder_lcnn.pt"
+TYPO_RVC_MODEL_PATH = PROJECT_ROOT / "checkpoints" / "best_model_rvc_whipser_encoder_lcnn.pt"
+LEGACY_TTS_MODEL_PATH = PROJECT_ROOT / "model" / "checkpoints" / "best_model_tts_whisper_encoder_lcnn.pt"
+LEGACY_RVC_MODEL_PATH = PROJECT_ROOT / "model" / "checkpoints" / "best_model_rvc_whisper_encoder_lcnn.pt"
+LEGACY_TYPO_RVC_MODEL_PATH = PROJECT_ROOT / "model" / "checkpoints" / "best_model_rvc_whipser_encoder_lcnn.pt"
 
-_MODEL = None
-_MODEL_PATH: Optional[Path] = None
-_MODEL_DEVICE: Optional[str] = None
-_THRESHOLD = 0.28
+DEFAULT_MODEL_PATH = DEFAULT_TTS_MODEL_PATH
+LEGACY_MODEL_PATH = LEGACY_TTS_MODEL_PATH
+DEFAULT_THRESHOLD = 0.28
+
+_MODEL_ENV_VARS = {
+    "tts": ("DEEPVOICE_TTS_MODEL_PATH", "DEEPVOICE_MODEL_PATH"),
+    "rvc": ("DEEPVOICE_RVC_MODEL_PATH",),
+}
+
+_MODEL_PATH_CANDIDATES = {
+    "tts": (DEFAULT_TTS_MODEL_PATH, LEGACY_TTS_MODEL_PATH),
+    "rvc": (
+        DEFAULT_RVC_MODEL_PATH,
+        TYPO_RVC_MODEL_PATH,
+        LEGACY_RVC_MODEL_PATH,
+        LEGACY_TYPO_RVC_MODEL_PATH,
+    ),
+}
+
+_MODEL_LABELS = {
+    "tts": "TTS",
+    "rvc": "RVC",
+}
+
+_MODEL_CACHE: dict[tuple[str, Path, str], tuple[torch.nn.Module, float]] = {}
+
+
+@dataclass(frozen=True)
+class ModelSpec:
+    key: str
+    label: str
+    path: Path
 
 
 @lru_cache(maxsize=1)
@@ -58,22 +91,70 @@ def _load_deepvoice_model_class():
     return module.WhisperEncoderLCNN
 
 
-def _resolve_model_path(model_path: Optional[PathLike] = None) -> Path:
-    explicit_path = model_path or os.getenv("DEEPVOICE_MODEL_PATH")
+def _resolve_model_path(
+    model_path: Optional[PathLike] = None,
+    model_key: str = "tts",
+) -> Path:
+    explicit_path = model_path
     if explicit_path:
         path = _resolve_project_path(explicit_path)
         if not path.exists():
             raise FileNotFoundError(f"Model checkpoint not found: {path}")
         return path
 
-    for path in (DEFAULT_MODEL_PATH, LEGACY_MODEL_PATH):
+    if model_key not in _MODEL_PATH_CANDIDATES:
+        raise ValueError(f"Unknown model key: {model_key}")
+
+    for env_name in _MODEL_ENV_VARS[model_key]:
+        env_value = os.getenv(env_name)
+        if env_value:
+            path = _resolve_project_path(env_value)
+            if not path.exists():
+                raise FileNotFoundError(
+                    f"Model checkpoint from {env_name} not found: {path}"
+                )
+            return path
+
+    for path in _MODEL_PATH_CANDIDATES[model_key]:
         if path.exists():
             return path.resolve()
 
+    candidates = ", ".join(str(path) for path in _MODEL_PATH_CANDIDATES[model_key])
     raise FileNotFoundError(
-        "Model checkpoint not found. Put the .pt file at "
-        f"{DEFAULT_MODEL_PATH} or set DEEPVOICE_MODEL_PATH."
+        f"{_MODEL_LABELS[model_key]} model checkpoint not found. Put the .pt file at "
+        f"{candidates} or set one of: {', '.join(_MODEL_ENV_VARS[model_key])}."
     )
+
+
+def _resolve_optional_model_path(model_key: str) -> Optional[Path]:
+    try:
+        return _resolve_model_path(model_key=model_key)
+    except FileNotFoundError:
+        if any(os.getenv(env_name) for env_name in _MODEL_ENV_VARS[model_key]):
+            raise
+        return None
+
+
+def _available_model_specs() -> list[ModelSpec]:
+    specs = [
+        ModelSpec(
+            key="tts",
+            label=_MODEL_LABELS["tts"],
+            path=_resolve_model_path(model_key="tts"),
+        )
+    ]
+
+    rvc_path = _resolve_optional_model_path("rvc")
+    if rvc_path is not None:
+        specs.append(
+            ModelSpec(
+                key="rvc",
+                label=_MODEL_LABELS["rvc"],
+                path=rvc_path,
+            )
+        )
+
+    return specs
 
 
 def default_device() -> torch.device:
@@ -90,24 +171,21 @@ def _load_torch_checkpoint(model_path: Path, device: torch.device) -> Any:
 def load_checkpoint(
     model_path: Optional[PathLike] = None,
     device: Optional[torch.device] = None,
+    model_key: str = "tts",
 ) -> tuple[torch.nn.Module, float]:
-    global _MODEL, _MODEL_PATH, _MODEL_DEVICE, _THRESHOLD
-
     device = device or default_device()
-    resolved_model_path = _resolve_model_path(model_path)
+    resolved_model_path = _resolve_model_path(model_path, model_key=model_key)
     device_key = str(device)
+    cache_key = (model_key, resolved_model_path, device_key)
 
-    if (
-        _MODEL is not None
-        and _MODEL_PATH == resolved_model_path
-        and _MODEL_DEVICE == device_key
-    ):
-        return _MODEL, _THRESHOLD
+    if cache_key in _MODEL_CACHE:
+        return _MODEL_CACHE[cache_key]
 
     checkpoint = _load_torch_checkpoint(resolved_model_path, device)
+    checkpoint_threshold = DEFAULT_THRESHOLD
     if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
         state_dict = checkpoint["state_dict"]
-        _THRESHOLD = float(checkpoint.get("threshold", _THRESHOLD))
+        checkpoint_threshold = float(checkpoint.get("threshold", checkpoint_threshold))
         config = checkpoint.get("config", {}) or {}
     else:
         state_dict = checkpoint
@@ -128,14 +206,12 @@ def load_checkpoint(
     model.load_state_dict(state_dict)
     model.eval()
 
-    _MODEL = model
-    _MODEL_PATH = resolved_model_path
-    _MODEL_DEVICE = device_key
+    _MODEL_CACHE[cache_key] = (model, checkpoint_threshold)
     print(
-        "DeepVoice model loaded: "
-        f"{resolved_model_path} (threshold={_THRESHOLD:.2f}, device={device})"
+        f"DeepVoice {_MODEL_LABELS.get(model_key, model_key).upper()} model loaded: "
+        f"{resolved_model_path} (threshold={checkpoint_threshold:.2f}, device={device})"
     )
-    return _MODEL, _THRESHOLD
+    return _MODEL_CACHE[cache_key]
 
 
 def audio_to_mel(audio: np.ndarray) -> torch.Tensor:
@@ -216,12 +292,21 @@ def generate_logmel_heatmap(
     audio_path: str,
     audio: np.ndarray,
     is_fake: int,
+    model_path: Optional[PathLike] = None,
+    model_key: str = "tts",
+    model_label: Optional[str] = None,
 ) -> dict[str, Any]:
     device = default_device()
-    model, threshold = load_checkpoint(device=device)
+    resolved_model_path = _resolve_model_path(model_path, model_key=model_key)
+    model, threshold = load_checkpoint(
+        resolved_model_path,
+        device=device,
+        model_key=model_key,
+    )
     target_idx = 1 if is_fake else 0
     target_class = "fake" if is_fake else "real"
 
+    original_freeze_whisper = getattr(model, "freeze_whisper", None)
     model.freeze_whisper = False
     for parameter in model.parameters():
         parameter.requires_grad_(False)
@@ -254,6 +339,9 @@ def generate_logmel_heatmap(
     output_path = HEATMAP_DIR / f"{stem}_logmel_heatmap.png"
     metadata = {
         "model_type": "whisper_encoder_lcnn",
+        "model_key": model_key,
+        "model_label": model_label or _MODEL_LABELS.get(model_key, model_key.upper()),
+        "model_path": str(resolved_model_path),
         "visualization": "log-Mel input gradient-based evidence heatmap",
         "threshold": threshold,
         "result": result,
@@ -266,6 +354,8 @@ def generate_logmel_heatmap(
     }
 
     _save_heatmap_png(mel_cpu.numpy(), heatmap.numpy(), output_path, metadata)
+    if original_freeze_whisper is not None:
+        model.freeze_whisper = original_freeze_whisper
     output_path.with_suffix(".json").write_text(
         json.dumps(metadata, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -279,15 +369,18 @@ def generate_logmel_heatmap(
     }
 
 
-def predict_audio_array(
-    audio: np.ndarray,
-    model_path: Optional[PathLike] = None,
+def _predict_mel_with_model(
+    mel: torch.Tensor,
+    spec: ModelSpec,
+    device: torch.device,
     threshold: Optional[float] = None,
-) -> tuple[int, float, float]:
-    device = default_device()
-    model, checkpoint_threshold = load_checkpoint(model_path, device)
-    threshold = checkpoint_threshold if threshold is None else threshold
-    mel = audio_to_mel(audio)
+) -> dict[str, Any]:
+    model, checkpoint_threshold = load_checkpoint(
+        spec.path,
+        device=device,
+        model_key=spec.key,
+    )
+    resolved_threshold = checkpoint_threshold if threshold is None else threshold
 
     with torch.no_grad():
         logits = model(mel.to(device))
@@ -295,9 +388,165 @@ def predict_audio_array(
         real_prob = float(prob[0].item())
         fake_prob = float(prob[1].item())
 
-    is_fake = 1 if fake_prob >= threshold else 0
+    is_fake = 1 if fake_prob >= resolved_threshold else 0
     confidence = fake_prob if is_fake else real_prob
-    return is_fake, round(confidence * 100, 2), fake_prob
+    return {
+        "model_key": spec.key,
+        "model_label": spec.label,
+        "model_path": str(spec.path),
+        "is_fake": is_fake,
+        "result": "FAKE" if is_fake else "REAL",
+        "confidence": round(confidence * 100, 2),
+        "real_prob": real_prob,
+        "fake_prob": fake_prob,
+        "threshold": resolved_threshold,
+    }
+
+
+def predict_audio_array_detailed(
+    audio: np.ndarray,
+    model_path: Optional[PathLike] = None,
+    threshold: Optional[float] = None,
+    model_key: str = "tts",
+    model_label: Optional[str] = None,
+) -> dict[str, Any]:
+    resolved_model_path = _resolve_model_path(model_path, model_key=model_key)
+    spec = ModelSpec(
+        key=model_key,
+        label=model_label or _MODEL_LABELS.get(model_key, model_key.upper()),
+        path=resolved_model_path,
+    )
+    return _predict_mel_with_model(audio_to_mel(audio), spec, default_device(), threshold)
+
+
+def predict_audio_array(
+    audio: np.ndarray,
+    model_path: Optional[PathLike] = None,
+    threshold: Optional[float] = None,
+) -> tuple[int, float, float]:
+    prediction = predict_audio_array_detailed(
+        audio,
+        model_path=model_path,
+        threshold=threshold,
+        model_key="tts",
+    )
+    is_fake = int(prediction["is_fake"])
+    confidence = float(prediction["confidence"])
+    fake_prob = float(prediction["fake_prob"])
+    return is_fake, confidence, fake_prob
+
+
+def predict_audio_array_all_models(audio: np.ndarray) -> list[dict[str, Any]]:
+    device = default_device()
+    mel = audio_to_mel(audio)
+    return [
+        _predict_mel_with_model(mel, spec, device)
+        for spec in _available_model_specs()
+    ]
+
+
+def warm_up_models() -> dict[str, Any]:
+    start_time = time.time()
+    audio = np.zeros(16000, dtype=np.float32)
+    librosa.feature.spectral_centroid(y=audio, sr=16000).mean()
+    librosa.feature.zero_crossing_rate(audio).mean()
+    spec = np.abs(librosa.stft(audio, n_fft=2048))
+    librosa.amplitude_to_db(spec + 1e-12, ref=np.max)
+
+    predictions = predict_audio_array_all_models(audio)
+    overall = choose_overall_prediction(predictions)
+    try:
+        generate_logmel_heatmap(
+            "__warmup__.wav",
+            audio,
+            int(overall["is_fake"]),
+            model_path=overall["heatmap_model_path"],
+            model_key=overall["heatmap_model_key"],
+            model_label=overall["heatmap_model_label"],
+        )
+    finally:
+        for suffix in (
+            "_logmel_heatmap.png",
+            "_logmel_heatmap.json",
+            "_logmel_heatmap.heatmap.npy",
+            "_logmel_heatmap.mel.npy",
+        ):
+            path = HEATMAP_DIR / f"__warmup__{suffix}"
+            if path.exists():
+                path.unlink()
+
+    return {
+        "models": [prediction["model_key"] for prediction in predictions],
+        "elapsed": round(time.time() - start_time, 3),
+    }
+
+
+def choose_overall_prediction(predictions: list[dict[str, Any]]) -> dict[str, Any]:
+    if not predictions:
+        raise RuntimeError("No DeepVoice model checkpoints are available.")
+
+    tts_prediction = next(
+        (prediction for prediction in predictions if prediction["model_key"] == "tts"),
+        None,
+    )
+    rvc_prediction = next(
+        (prediction for prediction in predictions if prediction["model_key"] == "rvc"),
+        None,
+    )
+
+    tts_detected = bool(tts_prediction and tts_prediction["is_fake"])
+    rvc_detected = bool(rvc_prediction and rvc_prediction["is_fake"])
+    heatmap_source = max(predictions, key=lambda prediction: prediction["fake_prob"])
+
+    if tts_detected and rvc_detected:
+        return {
+            **heatmap_source,
+            "is_fake": 1,
+            "confidence": round(float(heatmap_source["fake_prob"]) * 100, 2),
+            "fake_prob": float(heatmap_source["fake_prob"]),
+            "decision_model": "combined",
+            "final_label": "가짜 음성",
+            "detail_type": "TTS/RVC 복합 유형",
+            "heatmap_model_key": heatmap_source["model_key"],
+            "heatmap_model_label": heatmap_source["model_label"],
+            "heatmap_model_path": heatmap_source["model_path"],
+        }
+
+    if tts_detected:
+        return {
+            **tts_prediction,
+            "decision_model": "tts",
+            "final_label": "가짜 음성",
+            "detail_type": "TTS 합성음성",
+            "heatmap_model_key": tts_prediction["model_key"],
+            "heatmap_model_label": tts_prediction["model_label"],
+            "heatmap_model_path": tts_prediction["model_path"],
+        }
+
+    if rvc_detected:
+        return {
+            **rvc_prediction,
+            "decision_model": "rvc",
+            "final_label": "가짜 음성",
+            "detail_type": "RVC 변환음성",
+            "heatmap_model_key": rvc_prediction["model_key"],
+            "heatmap_model_label": rvc_prediction["model_label"],
+            "heatmap_model_path": rvc_prediction["model_path"],
+        }
+
+    real_source = min(predictions, key=lambda prediction: prediction["real_prob"])
+    return {
+        **real_source,
+        "is_fake": 0,
+        "confidence": round(float(real_source["real_prob"]) * 100, 2),
+        "fake_prob": float(real_source["fake_prob"]),
+        "decision_model": "real",
+        "final_label": "실제 음성",
+        "detail_type": "해당 없음",
+        "heatmap_model_key": real_source["model_key"],
+        "heatmap_model_label": real_source["model_label"],
+        "heatmap_model_path": real_source["model_path"],
+    }
 
 
 def extract_visual_features(audio_path: str) -> dict[str, Any]:
@@ -336,8 +585,19 @@ def predict_audio_file(
 def analyze_audio_sync(file_path: str) -> dict[str, Any]:
     start_time = time.time()
     features = extract_visual_features(file_path)
-    is_fake, confidence, fake_prob = predict_audio_array(features["audio"])
-    heatmap = generate_logmel_heatmap(file_path, features["audio"], is_fake)
+    model_results = predict_audio_array_all_models(features["audio"])
+    overall = choose_overall_prediction(model_results)
+    is_fake = int(overall["is_fake"])
+    confidence = float(overall["confidence"])
+    fake_prob = float(overall["fake_prob"])
+    heatmap = generate_logmel_heatmap(
+        file_path,
+        features["audio"],
+        is_fake,
+        model_path=overall["heatmap_model_path"],
+        model_key=overall["heatmap_model_key"],
+        model_label=overall["heatmap_model_label"],
+    )
     processing_time = round(time.time() - start_time, 3)
 
     return {
@@ -350,6 +610,10 @@ def analyze_audio_sync(file_path: str) -> dict[str, Any]:
         "zero_crossing_rate": features["zero_crossing_rate"],
         "freq_data": features["freq_data"],
         "fake_prob": round(fake_prob * 100, 2),
+        "decision_model": overall["decision_model"],
+        "final_label": overall["final_label"],
+        "detail_type": overall["detail_type"],
+        "model_results": model_results,
         "heatmap_url": heatmap["url"],
         "heatmap_metadata": heatmap["metadata"],
     }

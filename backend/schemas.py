@@ -25,6 +25,10 @@ class AnalysisResponse(BaseModel):
     message: str
     result: Optional[AnalysisResult] = None
     frequency_data: Optional[List[float]] = None
+    decision_model: Optional[str] = None
+    final_label: Optional[str] = None
+    detail_type: Optional[str] = None
+    model_results: Optional[List[Dict[str, Any]]] = None
     heatmap_url: Optional[str] = None
     heatmap_metadata: Optional[Dict[str, Any]] = None
 

@@ -36,11 +36,27 @@ export interface AnalysisResult {
   created_at: string;
 }
 
+export interface ModelAnalysisResult {
+  model_key: string;
+  model_label: string;
+  model_path: string;
+  is_fake: number;
+  result: "REAL" | "FAKE";
+  confidence: number;
+  real_prob: number;
+  fake_prob: number;
+  threshold: number;
+}
+
 export interface AnalysisResponse {
   success: boolean;
   message: string;
   result?: AnalysisResult | null;
   frequency_data?: number[] | null;
+  decision_model?: string | null;
+  final_label?: string | null;
+  detail_type?: string | null;
+  model_results?: ModelAnalysisResult[] | null;
   heatmap_url?: string | null;
   heatmap_metadata?: Record<string, unknown> | null;
   detail?: string;

@@ -52,7 +52,7 @@ export function HistoryTable({ items, total, isLoading }: HistoryTableProps) {
                     <td className="filename-cell">{item.filename}</td>
                     <td>
                       <span className={`badge ${isFake ? "fake" : "real"}`}>
-                        {isFake ? "AI 합성" : "실제 음성"}
+                        {isFake ? "가짜 음성" : "실제 음성"}
                       </span>
                     </td>
                     <td className="strong-cell">{Number(item.confidence || 0).toFixed(1)}%</td>

@@ -86,12 +86,16 @@ async def upload_and_analyze(
     db.refresh(record)
 
     label = "AI-generated voice" if result["is_fake"] else "real voice"
+    decision_model = result.get("decision_model", "tts")
+    detail_type = result.get("detail_type", "-")
     _log(
         db,
         record.id,
         "INFO",
         f"Analysis complete: {label} "
-        f"(confidence {result['confidence']}%, processing {result['processing_time']}s)",
+        f"(confidence {result['confidence']}%, model {decision_model}, "
+        f"detail {detail_type}, "
+        f"processing {result['processing_time']}s)",
     )
 
     return AnalysisResponse(
@@ -99,6 +103,10 @@ async def upload_and_analyze(
         message=f"Analysis complete: detected as {label}.",
         result=AnalysisResult.model_validate(record),
         frequency_data=result["freq_data"],
+        decision_model=decision_model,
+        final_label=result.get("final_label"),
+        detail_type=detail_type,
+        model_results=result.get("model_results"),
         heatmap_url=result["heatmap_url"],
         heatmap_metadata=result["heatmap_metadata"],
     )
